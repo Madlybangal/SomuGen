@@ -1,0 +1,864 @@
+import socket
+from openpyxl.worksheet.datavalidation import DataValidation
+from io import BytesIO
+import pandas as pd
+import dash
+import io, os
+import base64
+from dash import html, dcc, dash_table
+import webbrowser
+from threading import Timer
+from sklearn.cluster import KMeans
+from sklearn.feature_extraction.text import TfidfVectorizer
+import dash_auth
+import numpy as np
+import plotly.express as px
+import dash_bootstrap_components as dbc
+
+VALID_USERNAME_PASSWORD_PAIRS = {
+    'Orbit-Admin': '123India'
+}
+# Sample data for the table
+table_data = pd.DataFrame(columns=['Insight', 'Action', 'Owner', 'Target Date'])
+params = ['ID','Cluster','Delivery_Centre','Entity','Company_code','Activity_type','Task_name','Frequency','Timelines','Target_Date','Actual_Date','Status','Comments','Time_taken','Genpact_resource','Genpact_resource_OHR','Genpact_Reviewer', 'Genpact_Reviewer_OHR']
+# analyze_table_df = pd.DataFrame( columns=[p for p in params])
+gbl_df=pd.DataFrame( columns=[p for p in params])
+analyze_datatable_gbl_df=gbl_df.copy()
+# Create empty rows & concatenate with table header
+empty_rows = pd.DataFrame('', index=range(5), columns=table_data.columns)
+table_data= pd.concat([table_data, empty_rows], ignore_index=True)
+
+# Global variables to store the file path and dropdown options
+# file_path = None
+# gbl_df = None
+filtered_df = pd.DataFrame()
+# load_dotenv()
+
+app = dash.Dash(__name__, external_stylesheets=['assets/css/style.css'])
+app.title = 'Orbit 1.01'
+server = app.server
+server.secret_key = os.urandom(24)
+auth = dash_auth.BasicAuth(
+    app,
+    VALID_USERNAME_PASSWORD_PAIRS
+)
+# Define the layout of the app
+app.layout = html.Div(children=[
+    html.Div([
+        html.Div([
+            # Left section with icon or logo
+            html.Div([
+                # html.I("👥", className="fa fa-user-circle icon"),  # Placeholder for logo/icon
+                html.Img(src='/assets/css/loadbalance.png',
+                           style={'height': '35px', 'width': '60px', 'margin': '1px'}),
+                html.Span("Orbit Tool", className="orbit-ui")  # Logo text (if needed)
+            ], className="header-left"),  # Left section with icon and text
+
+            # Center section with the title
+            html.Div([
+                html.Span("RTR PEAK LOAD ANALYTICS MODULE", className="module-title"),  # Center title
+
+            ], className="header-title"),  # Center section for title
+
+            # Right section (if needed for future buttons or profile)
+            html.Div([dcc.Upload(id='upload-data',
+                                 children=html.Button([html.A('Import .csv File')], className="import-btn"),
+                                 # Allow multiple files to be uploaded
+                                 multiple=True,
+                                 accept='.csv'
+                                 )], className="header-right")  # Empty right section for now
+
+        ], className="wrapper")], className="header"),  # Header class to style the entire header
+
+    dcc.Store(id='stored-data'),
+    dcc.Store(id='work-day'),
+    dcc.Store(id='work-day-data'),
+    html.Div([html.Div([
+        dcc.Tabs(
+            id="mtabs-example",
+            value='mtab-1',
+            children=[
+                dcc.Tab(label='Data Mining', value='mtab-1', className="custom-tab",
+                        selected_className="custom-tab--selected"),
+                dcc.Tab(label='Predicted Level Loading', value='mtab-2', className="custom-tab",
+                        selected_className="custom-tab--selected")
+            ], className="mtabs-container tabs-container"
+        )
+
+    ], className="wrapper"), html.Div(id='mtabs-content', className="tabs-content")], className="tabs-main-container")
+])
+
+
+# Callback to export the action table contents to an Excel file
+# Callback to update content based on selected tab
+@app.callback(
+    dash.dependencies.Output('mtabs-content', 'children'),
+    [dash.dependencies.Input('mtabs-example', 'value')],
+    dash.dependencies.Input('stored-data', 'data')
+)
+def render_content(tab,data):
+    print("tab: \n ", tab)
+
+    if (tab == 'mtab-1') and (data is not None):
+        return html.Div(
+            [html.Div([
+                # create the dropdown and graphs
+                html.Div([
+                    html.Div([
+                        html.P(
+                            "Use these visualizations to understand the distribution of work w.r.t various parameters",
+                            className="csvDescription"),
+                        html.H5("Define Monthly Man Hours of 1 FTE:\n", id='define_fte', className="define-text"),
+                        dcc.Input(id="define_fte_input1", type="number", placeholder="Number only",
+                                  className="define-input"),
+                        dcc.Store(id="fte_input1-value"),
+                    ], className="define-text-container"),
+                    dcc.Tabs(
+                        id="tabs-example",
+                        value='tab-1',
+                        children=[
+                            dcc.Tab(label='Peak Load bar Graph', value='tab-1', className="custom-tab",
+                                    selected_className="custom-tab--selected" ),
+                            # children=[html.Button('Update', className="update-btn", id="loadreduction-button", n_clicks=0)]
+                            dcc.Tab(label='Outlier Task Box Plot', value='tab-2', className="custom-tab",
+                                    selected_className="custom-tab--selected"),
+                            dcc.Tab(label='Overloaded Resources Bubble Chart', value='tab-3', className="custom-tab",
+                                    selected_className="custom-tab--selected"),
+                            dcc.Tab(label='Work Distribution Heat Map', value='tab-4', className="custom-tab",
+                                    selected_className="custom-tab--selected"),
+                            dcc.Tab(label='Resource/Task Optimization', value='tab-5', className="custom-tab",
+                                    selected_className="custom-tab--selected"),
+                        ],
+                        className="tabs-container"
+                    ),
+                    html.Div(id='tabs-content', className="tabs-content")
+                ], className="tabs-main-container inner-tabs-container")
+
+            ], className="wrapper")]
+        )
+    elif (tab == 'mtab-2') and (data is not None):
+        return html.Div(
+            [html.P('Predicted Level Loading'),
+             html.Hr(),  # Horizontal line
+             html.P("Select the Peak Load WD and Activity Type to get level loading recommendations",
+                    style={'fontSize': '20px', 'text-align': 'center','color': '#1E90FF'}),
+             html.Details(open=False, children=[
+                 html.Summary('Find Clusters of Tasks that can be standardised',
+                              style={'cursor': 'pointer', 'fontSize': '20px', 'color': 'black'}),
+                 html.Div([
+                     html.Label('Select Peak-Workday to Level Load:',
+                                style={'font-family': 'Calibri', 'fontSize': '15px', 'color': 'black'}),
+                     dcc.Dropdown(
+                         id='Peak-workday',
+                         options=[],
+                         multi=False
+                         # value='Entity'
+                     ),
+                     dcc.Interval(
+                         id='Peak-workday-drpdwn-update',
+                         interval=3000,
+                         n_intervals=0,
+                         max_intervals=20
+                     ),
+                     html.Label('Select Resource to Level Load:',
+                                style={'font-family': 'Calibri', 'fontSize': '15px', 'color': 'black'}),
+                     dcc.Dropdown(
+                         id='Activity-type',
+                         options=[],
+                         multi=False
+                         # value='Activity_type'
+                     ),
+                     html.Br(),
+                     html.Label('How Aggresively do you want to Standardise:',
+                                style={'font-family': 'Calibri', 'fontSize': '15px', 'color': 'black'}),
+                     dcc.Slider(id='percentile-slider', min=75, max=90, value=75, step=5,
+                                marks={75: {'label': 'Aggressive','color': 'black'},
+                                       90: {'label': 'Lenient', 'color': 'black'}},
+                                tooltip={ "always_visible": True, "style": {"color": "LightSteelBlue", "fontSize": "8px"}},
+                                )], style={'width': '30%', 'display': 'inline-block'}),
+                 html.H1(id='level-fte', style={'font-family': 'Calibri', 'fontSize': '20px', 'color': 'black'}),
+                 dcc.Graph(id='cluster-chart'),
+                 dcc.Interval(
+                     id='cluster-chart-update',
+                     interval=3000,
+                     n_intervals=0,
+                     max_intervals=20
+                 ),
+                 dcc.Graph(id='level-load-chart'),
+                 html.Button('Export Level Loading Recommendations', id='export-button-pred',
+                             n_clicks=0),
+                 dcc.Store(id='prediction-data-store'),
+                 dcc.Download(id='prediction-data-download'),
+                 html.Button('Input Sheet for Recommendations', id='input-sheet', n_clicks=0),
+                 dcc.Download(id='input-sheet-download')
+                 ]),
+             html.H3('Fill Actionables Basis Insights', style={'color': 'black'}),
+             dash_table.DataTable(
+                 id='data-table',
+                 columns=[{'name': col, 'id': col, 'editable': True} for col in table_data.columns],
+                 data=table_data.to_dict('records'),
+                 style_table={'overflowX': 'auto', 'backgroundColor': 'transparent'},
+                 style_header={'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white', 'textAlign': 'center'},
+                 style_cell={
+                     'textAlign': 'center',
+                     'backgroundColor': 'transparent',
+                     'color': 'white',
+                     'border': '1px solid white'
+                 },
+             ),
+             html.Button('Export to Excel', id='export-button', n_clicks=0),
+             dcc.Download(id='data-download')])
+    elif data is  None:
+        return html.Div("Please Import .csv File...")
+
+# Callback to switch to tab5 when update-btn is clicked
+@app.callback(
+    dash.dependencies.Output("tabs-example", "value"),     # Update the value of nested tabs
+    dash.dependencies.Input("loadreduction-button", "n_clicks"),    # Triggered when the button is clicked
+    prevent_initial_call=True           # Prevents callback from running on page load
+)
+def open_tab5(n_clicks):
+
+    if n_clicks:
+        return 'tab-1'  # Set nested tab value to 'tab5' when button is clicked
+
+
+@app.callback(
+    dash.dependencies.Output('tabs-content', 'children'),
+    [dash.dependencies.Input('tabs-example', 'value')]
+)
+def render_content(tab):
+    if tab == 'tab-1':
+        return html.Div(
+            [
+                # Input Section with Labels and Inputs
+                html.Div([
+                    html.Div([
+                        html.Label("Enter Team Size:"),
+                        dcc.Input(id='billableresource', type="number", placeholder="Billable(FTE)", className="input-field"),
+                        dcc.Input(id='non-billableresource', type="number", placeholder="Non-Billable(FTE)", className="input-field"),
+                    ], className="input-group"),
+                    html.Div([
+                        html.Label("Enter Target:"),
+                        dcc.Input(id='target-resource',type="number", placeholder="Target(FTE)", className="input-field"),
+                    ], className="input-group"),
+                    html.Div([html.Button('Level Load Analysis', className="update-btn", id="loadreduction-button", n_clicks=0)], className="input-group-button"),
+
+                ], className="input-row"),
+                html.Div([
+                    html.Label("Select X-Axis:"),
+                    dcc.Dropdown(
+                        id='x-axis-column',
+                        options=[
+                            {'label': 'Cluster', 'value': 'Cluster'},
+                            {'label': 'Delivery_Centre', 'value': 'Delivery_Centre'},
+                            {'label': 'Activity_type', 'value': 'Activity_type'},
+                            {'label': 'Timelines', 'value': 'Timelines'},
+                            {'label': 'Resource', 'value': 'Genpact_resource'}
+                        ],
+                        placeholder="Select X-Axis for Bar Graph",
+                        value='Timelines',
+                        className="dropdown"
+                    ),
+                    # className="peak-load-container input-group")
+                    html.Div([html.Label("Peak Load:", className="peak-load-text")],className="input-group-status" ),
+                    # className="input-group-status"
+                    html.Div([
+                        html.Label(id='fte', className="peak-load-text-fte"),
+                    ]),
+                    html.Div([html.Label("Work Day:", className="peak-load-text")]),
+                    html.Div([
+                        html.Label(id='work-day', className="peak-load-text-fte"),
+                    ]),
+                    html.Div([html.Label("Total Resource:", className="peak-load-text")]),
+                    html.Div([
+                        html.Label(id='resource', className="peak-load-text-fte"),
+                    ])
+                ], className="input-group select-axis"),
+                dcc.Graph(id='bar-chart'),
+                dcc.Interval(
+                    id='bar-chart-update',
+                    interval=3000,
+                    n_intervals=0,
+                    max_intervals=20
+                )
+            ],
+            className="input-container"
+        )
+    elif tab == 'tab-2':
+        return html.Div( [html.Br(),
+                         html.Div([
+                             html.Label('Select X-Axis:', style={'font-family': 'Calibri', 'fontSize': '15px', 'color': 'black'}),
+                             dcc.Dropdown(
+                                 id='multi-x-axis-columns',
+                                 options=[
+                                     {'label': 'Entity', 'value': 'Entity'},
+                                     {'label': 'Company_code', 'value': 'Company_code'},
+                                     {'label': 'Resource', 'value': 'Genpact_resource'}
+                                 ], placeholder="Select X-Axis for Box Plot", value='Entity',  # Default value
+
+                             )], style={'width': '30%', 'display': 'inline-block'}),
+                         dcc.Graph(id='box-plot'),
+                         dcc.Interval(
+                             id='box-plot-chart-update',
+                             interval=3000,
+                             n_intervals=0,
+                             max_intervals=20
+                         )])
+    elif tab == 'tab-3':
+        return html.Div([
+            html.Br(),
+            dcc.Graph(id='bubble-plot'),
+            dcc.Interval(id='bubble-plot-chart-update',
+                         interval=3000,
+                         n_intervals=0,
+                         max_intervals=20
+                         )])
+    elif tab == 'tab-4':
+        return html.Div([
+            html.Br(),
+            html.Label('Select X-Axis:', style={'width': '30%','font-family': 'Calibri', 'fontSize': '15px', 'color': 'black'}),
+            dcc.Dropdown(id='x-axis-dropdown',
+                             options=[
+                                 {'label': 'Entity', 'value': 'Entity'},
+                                 {'label': 'Activity_type', 'value': 'Activity_type'},
+                                 {'label': 'Resource', 'value': 'Genpact_resource'},
+                                 {'label': 'Timelines', 'value': 'Timelines'}
+                             ], value='Entity', style={'width': '45%'}
+                             ),
+            html.Label('Select Y-Axis:', style={'width': '30%','font-family': 'Calibri', 'fontSize': '15px', 'color': 'black'}),
+            dcc.Dropdown(id='y-axis-dropdown',
+                             options=[
+                                 {'label': 'Entity', 'value': 'Entity'},
+                                 {'label': 'Activity_type', 'value': 'Activity_type'},
+                                 {'label': 'Resource', 'value': 'Genpact_resource'},
+                                 {'label': 'Timelines', 'value': 'Timelines'}
+                             ],
+                             value='Activity_type', style={'width': '45%'}
+                             ),
+            dcc.Graph(id='heatmap'),
+            dcc.Interval(
+                    id='heatmap-chart-update',
+                    interval=3000,
+                    n_intervals=0,
+                    max_intervals=20
+                ),
+            ], style={'width': '100%', 'display': 'inline-block'}),
+    elif tab == 'tab-5':
+        columns = [{'name':'ID','id':'ID','editable':True},{'name':'Delivery_Centre','id':'Delivery_Centre','editable':True},{'name':'Company_code','id':'Company_code','editable':True},
+                  {'name':'Activity_type','id':'Activity_type','editable':True},{'name':'Task_name','id':'Task_name','editable':True},{'name':'Frequency','id':'Frequency','editable':True},
+                  {'name':'Timelines','id':'Timelines','editable':True},{'name':'Target_Date','id':'Target_Date','editable':True},{'name':'Actual_Date','id':'Actual_Date','editable':True},
+                  {'name':'Time_taken','id':'Time_taken','editable':True},{'name':'Genpact_resource','id':'Genpact_resource','editable':True},{'name':'Genpact_resource_OHR','id':'Genpact_resource_OHR','editable':True}  ]
+        return html.Div([
+            html.Div([
+                html.Label('Peak-Workday to Level Load:', style={'font-family': 'Calibri', 'width': '40%', 'fontSize': '15px', 'color': 'black'}),
+                dcc.Dropdown( id='Peak-workday', options=[], multi=False, style={'width': '45%'},  persistence=True ),
+                html.Label('Select Resource to Level Load:', style={'font-family': 'Calibri', 'width': '45%', 'fontSize': '15px', 'color': 'black'}),
+                dcc.Dropdown(
+                        id='Resource-name',
+                        options=[],
+                        multi=False,
+                        style={'width': '40%'},
+                    ),
+                html.Label('Select Activity :', style={'font-family': 'Calibri', 'width': '45%', 'fontSize': '15px', 'color': 'black'}),
+                dcc.Dropdown(
+                    id='Activity-Name',
+                    options=[],
+                    multi=False,
+                    style={'width': '40%'},
+                ),
+                ]),
+
+            dcc.Interval(
+                id='Peak-workday-drpdwn-update',
+                interval=3000,
+                n_intervals=0,
+                max_intervals=20
+            ),
+            # dash_table.DataTable(id='analyze_data-table', columns=[{'name': i, 'id': i} for i in gbl_df.columns],
+            #                      data=gbl_df.to_dict('records'), editable=True),
+
+            dash_table.DataTable(id='analyze_data-table', columns=columns, data=[], editable=True),
+            # style={'width': '30%', 'display': 'inline-block'}),
+            html.H1(id='level-fte',
+                    style={'font-family': 'Calibri', 'fontSize': '30px', 'color': 'black'}),
+            dcc.Graph(id='cluster-chart'),
+            dcc.Interval(
+                id='cluster-chart-update',
+                interval=3000,
+                n_intervals=0,
+                max_intervals=20
+            ),
+
+            dcc.Graph(id='level-load-chart'),
+            html.Button('Export Level Loading Recommendations', id='export-button-pred',
+                        n_clicks=0),
+            dcc.Store(id='prediction-data-store'),
+            dcc.Download(id='prediction-data-download'),
+            html.Button('Input Sheet for Recommendations', id='input-sheet', n_clicks=0),
+            dcc.Download(id='input-sheet-download')
+        ])
+
+
+@app.callback(
+     dash.dependencies.Output('analyze_data-table', 'data'),
+     [dash.dependencies.Input('Peak-workday', 'value'),dash.dependencies.Input('Resource-name', 'value'),dash.dependencies.Input('Activity-Name', 'value')]
+)
+def update_table(select_workday,select_resource,select_activity):
+    global gbl_df
+    if gbl_df is not None:
+        if (select_resource) and ( select_activity) and ( select_workday):
+            filtered_df = gbl_df.copy()
+            filtered_df1 = filtered_df.loc[(filtered_df['Timelines'] == select_workday) & (filtered_df['Genpact_resource'] == select_resource)  & (filtered_df['Activity_type'] == select_activity), ['ID','Delivery_Centre','Company_code','Activity_type','Task_name','Frequency','Timelines','Target_Date','Actual_Date','Time_taken','Genpact_resource','Genpact_resource_OHR']]
+            print("all three")
+            return filtered_df1.to_dict('records')
+        elif (select_resource) and ( select_workday) :
+            filtered_df = gbl_df.copy()
+            filtered_df1 = filtered_df.loc[(filtered_df['Timelines'] == select_workday) & (filtered_df['Genpact_resource'] == select_resource), ['ID','Delivery_Centre','Company_code','Activity_type','Task_name','Frequency','Timelines','Target_Date','Actual_Date','Time_taken','Genpact_resource','Genpact_resource_OHR'] ]
+            print("Only resource and work day")
+            return filtered_df1.to_dict('records')
+        elif (select_activity) and ( select_workday) :
+            filtered_df = gbl_df.copy()
+            filtered_df1 = filtered_df.loc[(filtered_df['Timelines'] == select_workday) & (filtered_df['Activity_type'] == select_activity), ['ID','Delivery_Centre','Company_code','Activity_type','Task_name','Frequency','Timelines','Target_Date','Actual_Date','Time_taken','Genpact_resource','Genpact_resource_OHR'] ]
+            print("Only activity and work day")
+            return filtered_df1.to_dict('records')
+        elif (select_workday):
+            filtered_df = gbl_df.copy()
+            filtered_df1 = filtered_df.loc[(filtered_df['Timelines'] == select_workday), ['ID','Delivery_Centre','Company_code','Activity_type','Task_name','Frequency','Timelines','Target_Date','Actual_Date','Time_taken','Genpact_resource','Genpact_resource_OHR']]
+            print("filtered_df1\n", filtered_df1)
+            print("Only work day")
+            return filtered_df1.to_dict('records')
+    else:
+        return {}
+
+
+@app.callback(
+    dash.dependencies.Output('work-day-data', 'data'),
+    dash.dependencies.Input('loadreduction-button', 'n_clicks'),
+    dash.dependencies.State('stored-data', 'data'),
+    dash.dependencies.State('work-day', 'value'),
+    dash.dependencies.State('billableresource', 'value'),
+    dash.dependencies.State('non-billableresource', 'value'),
+    dash.dependencies.State('target-resource', 'value'),
+)
+
+def list_top_wd_task(n_clicks, table_data,wdvalue, billres, nbillres, targets):
+
+    if n_clicks :
+        df_data=pd.DataFrame(table_data)
+        wd_data = df_data[df_data['Timelines'] == wdvalue].sort_values(by='Time_taken', ascending=False)
+        print("Billable Resource \n ", billres)
+        print("Non Billable Resource \n ", nbillres)
+        print("Target Data \n ", targets)
+        return wd_data.to_json(date_format='iso', orient='split')
+    else:
+        {}
+
+@app.callback(
+    dash.dependencies.Output('data-download', 'data'),
+    dash.dependencies.Input('export-button', 'n_clicks'),
+    dash.dependencies.State('data-table', 'data')
+)
+def export_data_to_excel(n_clicks, table_data):
+    if n_clicks > 0:
+        df_action = pd.DataFrame(table_data)
+        excel_data = df_action.to_csv(index=False, encoding='utf-8-sig')
+        return dict(content=excel_data, filename='table_data.csv')
+
+
+@app.callback(
+    dash.dependencies.Output('input-sheet-download', 'data'),
+    dash.dependencies.Input('input-sheet', 'n_clicks'),
+    dash.dependencies.State('prediction-data-store', 'data'),
+    prevent_initial_call=True
+)
+def download_gemba(n_clicks, dff):
+    if n_clicks is None or dff is None:
+        raise dash.exceptions.PreventUpdate
+    input_df = pd.DataFrame(dff)
+    filtered_df = input_df[input_df['Level_Loaded_Flag'] == 'Yes']
+    filtered_input = filtered_df.copy()
+
+    # Define new columns with their default values
+    new_columns = {
+        'Critical 1': 'Yes',
+        'Critical 2': 'Yes',
+        'Notional 1': 9,
+        'Notional 2': 9,
+        'Notional 3': 9,
+        'Remarks': "",
+    }
+
+    # Safely adding columns using .loc for the entire DataFrame
+    for col_name, default_value in new_columns.items():
+        filtered_input.loc[:, col_name] = default_value
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        filtered_input.to_excel(writer, index=False, sheet_name='Sheet1')
+        workbook = writer.book
+        sheet = workbook.active
+
+        # Function to find Excel column letter based on DataFrame column name
+        def get_excel_column(sheet, column_name):
+            for col in sheet[1]:  # Assuming the first row contains headers
+                if col.value == column_name:
+                    return col.column_letter
+
+        # Data validation setup
+        data_validations = [
+            (DataValidation(type="list", formula1='"Yes,No"'), "Critical 1"),
+            (DataValidation(type="list", formula1='"Yes,No"'), "Critical 2"),
+            (DataValidation(type="list", formula1='"1,3,6,9"'), "Notional 1"),
+            (DataValidation(type="list", formula1='"1,3,6,9"'), "Notional 2"),
+            (DataValidation(type="list", formula1='"1,3,6,9"'), "Notional 3")
+        ]
+
+        # Adding validations to the columns by names
+        for dv, col_name in data_validations:
+            col_letter = get_excel_column(sheet, col_name)
+            dv_range = f'{col_letter}2:{col_letter}{len(filtered_input) + 1}'
+            dv.showDropDown = True  # Show dropdown list in cell
+            dv.hide_drop_down = False
+            # dv.showInputMessage= True
+            # dv.allow_blank = False
+            # dv.ignore_blank = True  # Ignore blank cells in validation
+            dv.showErrorMessage = True
+            dv.error = 'Please select Yes/No OR 1/3/6/9 as per instructions'
+            dv.errorTitle = 'Invalid Entry'
+            # dv.prompt = 'Please select Yes/No OR 1/3/6/9 as per instructions'
+            # dv.promptTitle = 'List Selection'
+            dv.errorStyle = 'stop'  # This stops the user from
+            dv.add(dv_range)
+            sheet.add_data_validation(dv)
+
+    output.seek(0)  # Rewind to beginning of the file before sending
+    return dcc.send_bytes(output.getvalue(), filename="Gemba_input_sheet.xlsx")
+
+
+@app.callback(
+    dash.dependencies.Output('prediction-data-download', 'data'),
+    dash.dependencies.Input('export-button-pred', 'n_clicks'),
+    dash.dependencies.State('prediction-data-store', 'data'),
+    prevent_initial_call=True
+)
+def download_data(n_clicks, dff):
+    if n_clicks is None or dff is None:
+        raise dash.exceptions.PreventUpdate
+    dff = pd.DataFrame(dff)
+    export = dcc.send_data_frame(dff.to_csv, "Overall_Predictions.csv", index=False)
+    return export
+
+
+# Callback to export the action table contents to an Excel file
+@app.callback(
+    [dash.dependencies.Output('level-fte', 'children'), dash.dependencies.Output('cluster-chart', 'figure'),
+     dash.dependencies.Output('level-load-chart', 'figure'), dash.dependencies.Output('prediction-data-store', 'data')],
+    [dash.dependencies.Input('Peak-workday', 'value'), dash.dependencies.Input('Activity-type', 'value'),
+     dash.dependencies.Input('percentile-slider', 'value'), dash.dependencies.Input('export-button-pred', 'n_clicks'),
+     dash.dependencies.Input('cluster-chart-update', 'n_intervals')],
+)
+def cluster_tasks(filter_workday, filter_activity, quantile_value, n_clicks, n):
+    global gbl_df
+    global filtered_df
+
+    if gbl_df is not None:
+        df = gbl_df.copy()
+
+        # Delete rows where any cell is blank
+        df.dropna(subset=['Time_taken'], inplace=True)
+        filtered_df = df.copy()
+
+        if filter_workday is not None:
+            filter_workday = [filter_workday]
+            filtered_df = filtered_df[filtered_df['Timelines'].isin(filter_workday)]
+
+        if filter_activity is not None:
+            filter_activity = [filter_activity]
+            filtered_df = filtered_df[filtered_df['Activity_type'].isin(filter_activity)]
+
+        if filtered_df.shape[0] > 0:
+            tasks = filtered_df['Task_name'].tolist()
+            tfidf_vectorizer = TfidfVectorizer()
+            tfidf_matrix = tfidf_vectorizer.fit_transform(tasks)
+
+            max_clusters = 10  # Maximum number of clusters allowed
+            kmeans = KMeans(n_clusters=max_clusters, random_state=0)
+            cluster_labels = kmeans.fit_predict(tfidf_matrix)
+            cluster_names = []
+            for i in range(max_clusters):
+                cluster_name = str(filtered_df['Activity_type'].iloc[i]) + ' ' + chr(65 + i)  # Use ASCII  A, B, C, ...
+                cluster_names.append(cluster_name)
+            filtered_df.loc[:, 'Task_cluster'] = [cluster_names[label] for label in cluster_labels]
+            # # Calculate average "Time_taken" for each cluster
+            quantile_proportion = quantile_value / 100.0
+            cluster_avg_times = filtered_df.groupby('Task_cluster')['Time_taken'].quantile(
+                quantile_proportion).reset_index()
+            cluster_avg_times.rename(columns={'Time_taken': 'Avg_Time_taken'}, inplace=True)
+            # # Merge the average times back to the main dataframe
+            filtered_df = pd.merge(filtered_df, cluster_avg_times, on='Task_cluster', how='left')
+
+            # # Create the "Level_loaded_time" column based on the condition
+            filtered_df['Level_loaded_time'] = filtered_df.apply(
+                lambda row: row['Avg_Time_taken'] if row['Time_taken'] > row['Avg_Time_taken'] else row['Time_taken'],
+                axis=1)
+            # # Add "Level_Loaded_Flag" column
+            filtered_df['Level_Loaded_Flag'] = filtered_df.apply(
+                lambda row: 'Yes' if row['Level_loaded_time'] != row['Time_taken'] else 'No', axis=1)
+            #
+            # # Add "Time_saved" column
+            filtered_df['Time_saved'] = filtered_df['Time_taken'] - filtered_df['Level_loaded_time']
+            # # Calculate and print the sum of "Time_saved" column
+            time_saved_sum = round((filtered_df['Time_saved'].sum()) / 60 / 6.93, 2)
+            text1 = "Peak Load Reduction scope of "
+            text2 = " FTE through Standardizing similar tasks on "
+            level_fte = f"{text1} {time_saved_sum} {text2} {filter_workday} {filter_activity}"
+            dff = filtered_df
+            fig1 = px.scatter(filtered_df, x='Task_cluster', y='Time_taken', color='Task_cluster',
+                              hover_data=['Task_name', 'Time_taken', 'Level_loaded_time'])
+            fig2 = px.box(filtered_df, x='Task_cluster', y='Time_taken', points="all", boxmode='group',
+                          hover_data=['Task_name', 'Time_taken', 'Level_loaded_time'])
+            if n_clicks is None:
+                raise dash.exceptions.PreventUpdate
+
+            return level_fte, fig1, fig2, dff.to_dict(orient='records')
+        else:
+            return {}, {}, {}, {}
+
+@app.callback(
+     dash.dependencies.Output('Resource-name', 'options'),
+     [dash.dependencies.Input('Resource-name', 'value'), dash.dependencies.Input('Peak-workday-drpdwn-update', 'n_intervals')]
+ )
+
+def update_resource_dropdowns(filter_resource ,n):
+    global gbl_df
+    if gbl_df is not None:
+        df = gbl_df.copy()
+        resource_name_options = [{'label': t, 'value': t} for t in np.sort(df['Genpact_resource'].unique())]
+        return resource_name_options
+    else:
+        return {}
+
+@app.callback(
+     dash.dependencies.Output('Activity-Name', 'options'),
+     [dash.dependencies.Input('Activity-Name', 'value'), dash.dependencies.Input('Peak-workday-drpdwn-update', 'n_intervals')]
+ )
+
+def update_activity_dropdowns(filter_activity ,n):
+    global gbl_df
+    if gbl_df is not None:
+        df = gbl_df.copy()
+        activity_name_options = [{'label': t, 'value': t} for t in np.sort(df['Activity_type'].astype(str).unique())]
+        return activity_name_options
+    else:
+        return {}
+
+
+@app.callback(
+    [dash.dependencies.Output('Peak-workday', 'options'),dash.dependencies.Output('Peak-workday', 'value')],
+    [dash.dependencies.Input('stored-data', 'data'),
+     dash.dependencies.State('work-day', 'value'),
+     dash.dependencies.Input('Peak-workday', 'value'),
+     dash.dependencies.Input('Peak-workday-drpdwn-update', 'n_intervals')]
+)
+def update_dropdowns(workday_data, peak_workday,sel_value, n):
+    global gbl_df
+    # global analyze_table_df
+    if gbl_df is not None:
+        df = gbl_df.copy()
+        sorted_valuesWD = np.sort(df['Timelines'].unique())
+        timeline_options = [{'label': t, 'value': t} for t in sorted_valuesWD]
+        if( sel_value == None):
+            return timeline_options , peak_workday
+        else:
+            return timeline_options, sel_value
+
+        # return {}, activity_type_options
+    else:
+        return {}, {}
+
+
+@app.callback(
+    dash.dependencies.Output('heatmap', 'figure'),
+    [dash.dependencies.Input('x-axis-dropdown', 'value'), dash.dependencies.Input('y-axis-dropdown', 'value'),
+     dash.dependencies.Input('heatmap-chart-update', 'n_intervals'),
+     dash.dependencies.Input('fte_input1-value', 'data')],
+    prevent_initial_call=True
+)
+def update_heatmap(x_axis, y_axis, n, fte):
+    global gbl_df
+    if gbl_df is not None:
+
+        df = gbl_df.copy()
+        monthly_fte = int(fte)
+        df.dropna(subset=['Time_taken'], inplace=True)
+        # Convert Time_taken from minutes to hours
+        df['Time_taken_FTE'] = (df['Time_taken'] / 60) / monthly_fte
+        heatmap_data = df.groupby([x_axis, y_axis])['Time_taken_FTE'].sum().reset_index().pivot(
+            index=y_axis, columns=x_axis, values='Time_taken_FTE')
+        fig = px.imshow(heatmap_data, labels=dict(x=x_axis, y=y_axis),
+                        color_continuous_scale='sunsetdark', aspect='auto', title='Heatmap of Time Taken (FTE)')
+        fig.update_layout(margin=dict(l=50, r=50, b=50, t=50))
+        return fig
+    else:
+        return {}
+
+
+@app.callback(
+    dash.dependencies.Output('bubble-plot', 'figure'),
+    [dash.dependencies.Input('bubble-plot', 'id'), dash.dependencies.Input('bubble-plot-chart-update', 'n_intervals'),
+     dash.dependencies.Input('fte_input1-value', 'data')],
+    prevent_initial_call=True
+)
+def update_bubble_plot(_, n, fte):
+    global gbl_df
+    # Read the selected file into a DataFrame
+    if gbl_df is not None:
+        dff = gbl_df.copy()
+        monthly_fte = int(fte)
+        # Delete rows where any cell is blank
+        dff.dropna(subset=['Time_taken'], inplace=True)
+
+        # Convert Time_taken from minutes to hours
+        dff['Time_taken_FTE'] = (dff['Time_taken'] / 60) / monthly_fte
+
+        # Plot the Bubble plot
+        fig_bubble = px.scatter(dff, x='Timelines', y='Genpact_resource', size='Time_taken_FTE', color='Activity_type',
+                                size_max=60, hover_data=['Task_name', 'ID', 'Time_taken_FTE', 'Timelines'],
+                                title='Bubble Chart of Time Taken (FTE)')
+        return fig_bubble
+    else:
+        return {}
+
+
+# Callback to update the box plot based on the selected columns
+@app.callback(
+    dash.dependencies.Output('box-plot', 'figure'),
+    [dash.dependencies.Input('multi-x-axis-columns', 'value'),
+     dash.dependencies.Input('box-plot-chart-update', 'n_intervals'),
+     dash.dependencies.Input('fte_input1-value', 'data')],
+    prevent_initial_call=True
+)
+def update_box_plot(selected_columns, n, fte):
+    global gbl_df
+    if gbl_df is not None and selected_columns:
+        df = gbl_df.copy()
+        monthly_fte = int(fte)
+        # Delete rows where any cell is blank
+        df.dropna(subset=['Time_taken'], inplace=True)
+
+        # Convert Time_taken from minutes to hours
+        df['Time_taken_FTE'] = (df['Time_taken'] / 60) / monthly_fte
+        max_box_plot = df['Time_taken_FTE'].max()
+
+        if max_box_plot > 0 and max_box_plot < 0.2:
+            max_box_plot = max_box_plot + 0.05
+        elif max_box_plot > 0.2 and max_box_plot < 0.5:
+            max_box_plot = max_box_plot + 0.1
+        elif max_box_plot > 0.5 and max_box_plot < 1:
+            max_box_plot = max_box_plot + 0.2
+        else:
+            max_box_plot = max_box_plot + 1
+        # Plot the box plot for selected columns
+        fig = px.box(df, x=selected_columns, y='Time_taken_FTE', title='Box Plot of Time Taken (FTE)',
+                     hover_data=['Task_name', 'ID', 'Time_taken', 'Timelines'])
+        fig.update_traces(marker_color='purple', marker=dict(outliercolor='red'))
+        fig.update_xaxes(title_text=selected_columns)
+        fig.update_yaxes(title_text='Time Taken (FTE)', range=[0, max_box_plot])
+        return fig
+    else:
+        return {}
+
+
+# Callback to update the bar chart based on the selected x-axis column
+@app.callback(
+    [dash.dependencies.Output('fte', 'children'), dash.dependencies.Output('resource', 'children'), dash.dependencies.Output('work-day','children'), dash.dependencies.Output('bar-chart', 'figure')],
+    [dash.dependencies.Input('x-axis-column', 'value'), dash.dependencies.Input('bar-chart-update', 'n_intervals'),
+     dash.dependencies.Input('fte_input1-value', 'data')],
+    prevent_initial_call=True
+)
+def update_bar_chart(x_axis_column, n, fte):
+    global gbl_df
+    monthly_fte = int(fte)
+    if gbl_df is not None:
+
+        # Read the selected file into a DataFrame
+        df = gbl_df.copy()
+
+        # Delete rows where any cell is blank
+        df.dropna(subset=['Time_taken'], inplace=True)
+        # Convert Time_taken from minutes to hours
+        df['Time_taken_FTE'] = (df['Time_taken'] / 60) / monthly_fte
+        grouped_peak = df.groupby('Timelines')['Time_taken_FTE'].sum().reset_index()
+        grouped_peak_sorted = grouped_peak.sort_values(by='Time_taken_FTE', ascending=False)
+        highest_value_grouped = grouped_peak_sorted['Time_taken_FTE'].max()
+        peak_workday_df = grouped_peak_sorted.iloc[grouped_peak_sorted.index.get_loc(grouped_peak_sorted[grouped_peak_sorted['Time_taken_FTE'] == highest_value_grouped].index[0]),0]
+        resource = df['Genpact_resource'].nunique() + 1
+        fte = round(highest_value_grouped, 2)
+        fte_string = str(fte) + "FTE "
+
+        resource_string =  str(resource)
+        # Calculate the total time taken in hours by x-axis selection for the bar graph plotting
+        total_time_by_entity = df.groupby(x_axis_column)['Time_taken_FTE'].sum().reset_index()
+        # Plot the total time taken per x-axis parameter
+        fig = px.bar(total_time_by_entity, x=x_axis_column, y='Time_taken_FTE',
+                     color='Time_taken_FTE', color_continuous_scale='sunsetdark',
+                     title=f'Total Time Taken per {x_axis_column} (FTE)', text='Time_taken_FTE')
+        fig.update_xaxes(title_text=x_axis_column)
+        fig.update_yaxes(title_text='Total Time Taken (FTE)')
+        fig.update_traces(texttemplate='%{text:.2r}', textposition='outside')
+        fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
+
+        return fte_string,resource_string, peak_workday_df, fig
+    else:
+        return {}
+
+
+@app.callback(
+    dash.dependencies.Output('stored-data', 'data'),
+    dash.dependencies.Input('upload-data', 'contents'),
+    dash.dependencies.Input('upload-data', 'filename')
+
+)
+def update_output(list_of_contents, list_of_filenames):
+    global gbl_df
+    if list_of_contents is not None:
+        for i, (c, n) in enumerate(zip(list_of_contents, list_of_filenames)):
+            # print("list_of_filenames: \n", list_of_filenames[i])
+            content_type, content_string = list_of_contents[i].split(',')
+            decoded = base64.b64decode(content_string)
+            df1 = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
+            if df1 is not None:
+                gbl_df = pd.concat([gbl_df, df1])
+                print("Upload Data: \n",  gbl_df.to_dict('records'))
+                return gbl_df.to_dict('records')
+
+
+@app.callback(dash.dependencies.Output('fte_input1-value', 'data'),
+              dash.dependencies.Input('define_fte_input1', 'value'))
+def define_fte(value):
+    print("FTE Callback:\n ", value)
+
+    return value
+
+
+# Find an available port
+def find_free_port():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('localhost', 0))
+    _, port = s.getsockname()
+    s.close()
+    return port
+
+newport = find_free_port()
+# Run the Dash app
+# Open the browser after the server has started
+
+def open_browser():
+    webbrowser.open_new_tab(f'http://127.0.0.1:{newport}/')
+
+# Wait for the server to start and then open the browser
+
+Timer(1, open_browser).start()
+app.run_server(port=newport)
+
