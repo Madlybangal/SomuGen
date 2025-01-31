@@ -1,0 +1,192 @@
+Private Const GWL_STYLE = -16
+Private Const WS_CAPTION = &HC00000
+Private Const WS_SYSMENU = &H80000
+    Private Declare PtrSafe Function GetWindowLong _
+        Lib "user32" Alias "GetWindowLongA" (ByVal hWnd As Long, _
+        ByVal nIndex As Long) As Long
+    Private Declare PtrSafe Function SetWindowLong _
+        Lib "user32" Alias "SetWindowLongA" (ByVal hWnd As Long, _
+        ByVal nIndex As Long, ByVal dwNewLong As Long) As Long
+    Private Declare PtrSafe Function FindWindowA _
+        Lib "user32" (ByVal lpClassName As String, _
+        ByVal lpWindowName As String) As Long
+    Private Declare PtrSafe Function DrawMenuBar _
+        Lib "user32" (ByVal hWnd As Long) As Long
+Public Sub SystemButtonSettings(frm As Object, show As Boolean)
+Dim windowStyle As Long
+Dim windowHandle As Long
+windowHandle = FindWindowA(vbNullString, frm.Caption)
+windowStyle = GetWindowLong(windowHandle, GWL_STYLE)
+If show = False Then
+    SetWindowLong windowHandle, GWL_STYLE, (windowStyle And Not WS_SYSMENU)
+Else
+    SetWindowLong windowHandle, GWL_STYLE, (windowStyle + WS_SYSMENU)
+End If
+DrawMenuBar (windowHandle)
+End Sub
+Sub CMB_Add_Update()
+Application.ScreenUpdating = False
+Application.DisplayAlerts = False
+Application.EnableEvents = False
+Opentime = Now()
+Sheet16.Range("F13").Value = Opentime
+Sheet16.Range("G13").Value = ""
+Dim cnt As ADODB.Connection
+Dim rst As ADODB.Recordset
+Dim mySQL As String
+Dim iFieldIndex As Integer, FieldCount As Integer, offset As Integer
+Set cnt = New ADODB.Connection
+Set rst = New ADODB.Recordset
+Dim fieldName As String
+Dim colIndex As Integer
+Sheet13.Range("A2:C1048576").ClearContents
+Application.ScreenUpdating = False
+With Sheet1
+    .AutoFilterMode = False
+    Rw1 = Sheet1.Cells.Find("*", [A1], , , xlByRows, xlPrevious).Row
+    With .Range("A10:CZ" & Rw1)
+         .AutoFilter
+    End With
+End With
+Sheet1.Range("A11:CZ" & Rw1).Sort _
+        Key1:=Sheet1.Range("BE11"), order1:=xlAscending, Header:=xlNo
+On Error Resume Next
+FNew = Sheet1.Columns("BE").Find("New", LookIn:=xlValues, SearchDirection:=xlNext).Row
+LNew = Sheet1.Columns("BE").Find("New", LookIn:=xlValues, SearchDirection:=xlPrevious).Row
+FUpdate = Sheet1.Columns("BE").Find("Update Required", After:=Columns("BE").Find(What:="Update")).Row
+LUpdate = Sheet1.Columns("BE").Find("Update Required", LookIn:=xlValues, SearchDirection:=xlPrevious).Row
+If IsEmpty(FNew) = True Then FNew = 10
+If IsEmpty(LNew) = True Then LNew = 10
+If IsEmpty(FUpdate) = True Then FUpdate = 10
+If IsEmpty(LUpdate) = True Then LUpdate = 10
+Load ProgressForm
+With ProgressForm
+    .ProgressBar.Min = 1
+    .ProgressBar.Max = Rw1 - 10
+    .ProgressBar.Value = 1
+    .Caption = "Data Updated in SharePoint.."
+    .show vbModeless
+End With
+With cnt
+.ConnectionString = _
+    "Provider=Microsoft.ACE.OLEDB.12.0;WSS;IMEX=0;RetrieveIds=Yes;DATABASE=https://xxx.sharepoint.com/sites/HMSAutomation;LIST={816d6d19-55e1-4701-a3a0-634d26436961}"
+.Open
+End With
+cnt.BeginTrans
+n = FNew
+i = 2
+k = 2
+startTime = Timer
+Flg1 = ""
+Stop
+If FNew > 10 Then
+    caseID = Sheet1.Range("C" & FNew).Value
+    mySQL = "SELECT * FROM [Helix Case Dashboard] WHERE [Case ID] = '" & caseID & "';"
+    rst.Open mySQL, cnt, adLockOptimistic, adOpenStatic
+    offset = 0
+    FieldCount = rst.Fields.Count
+Do Until FNew > LNew
+    flag = ""
+    rst.AddNew
+    For iFieldIndex = 0 To FieldCount - 1
+        fieldName = rst.Fields(iFieldIndex).Name
+        If fieldName <> "ID" Then
+            On Error Resume Next
+            colIndex = Sheet1.Rows("10:10").Find(What:=fieldName, LookAt:=xlWhole, SearchOrder:=xlByRows).Column
+            If Err.Number = 0 Then
+                If Not IsError(colIndex) Or fieldName <> "ID" Then
+                    rst.Fields(iFieldIndex) = Sheet1.Cells(FNew, colIndex + offset)
+                 End If
+             Else
+             On Error GoTo 0
+             End If
+        End If
+    Next iFieldIndex
+    rst.Update
+    flag = "Created"
+    Sheet1.Range("BE" & FNew) = ""
+    FNew = FNew + 1
+    elapsedTime = Timer - startTime
+    elapsedMinutes = Int(elapsedTime / 60)
+    elapsedSeconds = Int(elapsedTime Mod 60)
+    ProgressForm.ProgressBar.Value = FNew - 11
+    ProgressForm.LabelProgress.Caption = (FNew - 11) & " / " & (LNew - 10) & " data is upgrading to Database!!" & " Elapsed Time: " & elapsedMinutes & " min " & elapsedSeconds & " sec.."
+    AppActivate ProgressForm.Caption
+    DoEvents
+Loop
+rst.Close
+End If
+If FUpdate > 10 Then
+    Do Until FUpdate > LUpdate
+        caseID = Sheet1.Range("C" & FUpdate).Value
+        mySQL = "SELECT * FROM [Helix Case Dashboard] WHERE [Case ID] = '" & caseID & "';"
+        rst.Open mySQL, cnt, adLockOptimistic, adOpenDynamic 'adOpenStatic
+        Flg1 = 1
+        offset = 0
+        FieldCount = rst.Fields.Count
+        If Not rst.EOF Then
+            flag = ""
+            For iFieldIndex = 0 To FieldCount - 1
+                fieldName = rst.Fields(iFieldIndex).Name
+                If fieldName <> "ID" Then
+                    On Error Resume Next
+                    colIndex = Sheet1.Rows("10:10").Find(What:=fieldName, LookAt:=xlWhole, SearchOrder:=xlByRows).Column
+                    If Not IsError(colIndex) Then
+                        rst.Fields(iFieldIndex).Value = Sheet1.Cells(FUpdate, colIndex + offset).Value
+                    End If
+                End If
+             Next iFieldIndex
+             rst.Update
+             flag = "Updated"
+             Sheet1.Range("BE" & FUpdate) = ""
+        End If
+        rst.Close
+        FUpdate = FUpdate + 1
+        elapsedTime = Timer - startTime
+        elapsedMinutes = Int(elapsedTime / 60)
+        elapsedSeconds = Int(elapsedTime Mod 60)
+        ProgressForm.ProgressBar.Value = FUpdate - 11
+        ProgressForm.LabelProgress.Caption = (FUpdate - 11) & " / " & (LUpdate - 10) & " data is upgrading to Database!!" & " Elapsed Time: " & elapsedMinutes & " min " & elapsedSeconds & " sec.."
+        AppActivate ProgressForm.Caption
+        DoEvents
+    Loop
+End If
+Unload ProgressForm
+If CBool(cnt.State And adStateOpen) = True Then
+    On Error Resume Next
+    cnt.Close
+End If
+Set rst = Nothing
+Set cnt = Nothing
+Sheet1.Range("AQ:AQ,AS:AS,AU:AU,AW:AW,AY:AY,BA:BA,BC:BC").Replace What:="1/0/1900  12:00:00 AM", Replacement:="", _
+LookAt:=xlPart, SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+    ReplaceFormat:=False, FormulaVersion:=xlReplaceFormula2
+Sheet1.Range("AR:AR,AT:AT,AV:AV,AX:AX,AZ:AZ,BB:BB,BD:BD").Replace What:="0", Replacement:="", LookAt:=xlPart, _
+    SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+    ReplaceFormat:=False, FormulaVersion:=xlReplaceFormula2
+With Sheet1
+    .AutoFilterMode = False
+    Rw1 = .Cells.Find("*", [A1], , , xlByRows, xlPrevious).Row
+    With .Range("A10:CZ" & Rw1)
+        .AutoFilter
+            .AutoFilter Field:=2, Criteria1:="Yes"
+            If Sheet1.Range("S10:S" & Rw1).SpecialCells(xlCellTypeVisible).Count > 1 Then
+                Sheet1.Range(Sheet1.Cells(11, 2), Sheet1.Cells(Rw1, 2)).SpecialCells(xlCellTypeVisible) = "TRUE"
+            End If
+    End With
+End With
+With Sheet1
+    .AutoFilterMode = False
+    Rw1 = .Cells.Find("*", [A1], , , xlByRows, xlPrevious).Row
+    With .Range("A10:CZ" & Rw1)
+        .AutoFilter
+    End With
+End With
+Sheet1.Range("A11:CZ" & Rw1).Sort _
+        Key1:=Sheet1.Range("C11"), order1:=xlAscending, Header:=xlNo
+Application.ScreenUpdating = True
+Application.DisplayAlerts = True
+Application.EnableEvents = True
+Closetime = Now()
+Sheet16.Range("G13").Value = Closetime
+End Sub
