@@ -1,0 +1,84 @@
+Public AMwb As Workbook, AMpath As String
+Public pathN As String
+Public ccode As String, wb As Workbook
+Sub downloadStatement()
+Application.ScreenUpdating = False
+With Application.FileDialog(msoFileDialogFilePicker)
+        .Title = "Select Account Mapping File"
+        If (.Show = 0) Then
+            MsgBox "File not Selected"
+            Exit Sub
+        Else
+            AMpath = .SelectedItems(1)
+            Set AMwb = Workbooks.Open(AMpath, UpdateLinks:=False)
+            AMshN = "Mapping"
+            AMLR = AMwb.Sheets(AMshN).Cells.Find("*", [A1], , , xlByRows, xlPrevious).Row
+        End If
+End With
+With Application.FileDialog(msoFileDialogFolderPicker)
+        .Title = "Select Folder to save account statement"
+        If (.Show = 0) Then
+            MsgBox "Folder not Selected"
+            Exit Sub
+        Else
+            pathN = .SelectedItems(1) & "\"
+            
+        End If
+End With
+         If (Dir(pathN & "*.xlsx") <> vbNullString) Then
+            Kill pathN & "*.xlsx"
+         End If
+         If (Dir(pathN & "*.MHTML") <> vbNullString) Then
+            Kill pathN & "*.MHTML"
+         End If
+        If Not IsObject(appl) Then
+                Set SapGuiAuto = GetObject("SAPGUI")
+                Set appl = SapGuiAuto.GetScriptingEngine
+             End If
+             If Not IsObject(Connection) Then
+                Set Connection = appl.Children(0)
+             End If
+             If Not IsObject(session) Then
+                Set session = Connection.Children(0)
+             End If
+             If IsObject(WScript) Then
+                WScript.ConnectObject session, "on"
+                WScript.ConnectObject appl, "on"
+             End If
+            Set Wshell = CreateObject("WScript.Shell")
+For Each cell In AMwb.Sheets(AMshN).Range("C2:C" & AMLR)
+        ccode = cell.Offset(0, -1)
+        On Error Resume Next
+        session.findById("wnd[0]").maximize
+        session.findById("wnd[0]/tbar[0]/okcd").Text = "FBL5N"
+        session.findById("wnd[0]").sendVKey 0
+        session.findById("wnd[0]/usr/ctxtDD_KUNNR-LOW").Text = cell
+        session.findById("wnd[0]/usr/ctxtDD_BUKRS-LOW").Text = ccode
+        session.findById("wnd[0]/usr/ctxtDD_BUKRS-HIGH").SetFocus
+        session.findById("wnd[0]/usr/ctxtDD_BUKRS-HIGH").caretPosition = 4
+        session.findById("wnd[0]/tbar[1]/btn[8]").press
+        session.findById("wnd[0]/mbar/menu[0]/menu[3]/menu[1]").Select
+        
+       
+        session.findById("wnd[1]/usr/ctxtDY_PATH").Text = pathN
+       
+        session.findById("wnd[1]/usr/ctxtDY_FILENAME").Text = cell & ".MHTML"
+        
+        session.findById("wnd[1]/usr/ctxtDY_FILENAME").caretPosition = 6
+        session.findById("wnd[1]/tbar[0]/btn[11]").press
+        Set wb = Workbooks.Open(pathN & cell & ".MHTML")
+        wb.SaveAs Filename:=pathN & cell & ".xlsx", FileFormat:=xlOpenXMLWorkbook, CreateBackup:=False
+        wb.Close
+        
+        Set wb = Nothing
+        session.findById("wnd[0]/tbar[0]/okcd").Text = "/n"
+        session.findById("wnd[0]").sendVKey 0
+        
+        If Dir(pathN & cell & ".xlsx") <> vbNullString Then
+            Call Formatfiles(pathN & cell & ".xlsx")
+        End If
+        Windows(cell & ".MHTML").Close
+Next
+Application.DisplayAlerts = False
+AMwb.Close
+End Sub
